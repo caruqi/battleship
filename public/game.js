@@ -49,6 +49,7 @@ let S = {
   winner: null,
   log: [],
   oppIncoming: new Array(100).fill(null), // my shots against enemy board
+  oppLetters: {}, // idx -> letter, revealed only for cells I've hit / ships I've sunk
   busy: false,
   pendingFire: null,
 };
@@ -124,12 +125,19 @@ function handleServerMessage(type, payload) {
     return render();
   }
   if (type === 'fire_result') {
-    const { by, idx, result, shipCells, shipName, coord, nextTurn } = payload;
+    const { by, idx, result, letter, shipCells, shipLetters, shipName, coord, nextTurn } = payload;
     if (by === S.role) {
       const pending = S.pendingFire && S.pendingFire.idx === idx ? S.pendingFire : null;
       const finish = () => {
         S.oppIncoming[idx] = result === 'sunk' ? 'sunk' : result;
-        if (shipCells) shipCells.forEach((c) => { S.oppIncoming[c] = 'sunk'; });
+        if (letter) S.oppLetters[idx] = letter;
+        if (shipCells) {
+          shipCells.forEach((c, i) => {
+            S.oppIncoming[c] = 'sunk';
+            const l = shipLetters && shipLetters[i];
+            if (l) S.oppLetters[c] = l;
+          });
+        }
         S.turn = nextTurn;
         S.log.push({ by, coord, result, shipName });
         S.busy = false;
@@ -284,6 +292,8 @@ function gridHtml(mode, clickable) {
           const li = ship.cells.indexOf(idx);
           letter = ship.letters[li] || '';
         }
+      } else if (mode === 'enemy' && S.oppLetters[idx]) {
+        letter = S.oppLetters[idx];
       }
       const inner = letter ? `<span class="ship-letter">${letter}</span>` : '';
       html += `<div class="${cls}" data-idx="${idx}" data-mode="${mode}">${inner}</div>`;
@@ -524,7 +534,7 @@ function doReady() {
   if (S.placementQueue.length > 0 || S.readySent) return;
   S.readySent = true;
   S.err = '';
-  wsSend('place_ships', { code: S.code, ships: S.ships.map((s) => ({ cells: s.cells })) });
+  wsSend('place_ships', { code: S.code, ships: S.ships.map((s) => ({ cells: s.cells, letters: s.letters })) });
   render();
 }
 function fireAt(idx) {
@@ -544,6 +554,7 @@ function doRematch() {
     phase: 'lobby', role: null, code: null, err: '',
     incoming: new Array(100).fill(null),
     oppIncoming: new Array(100).fill(null),
+    oppLetters: {},
     turn: null, status: null, winner: null, log: [], busy: false, pendingFire: null,
   };
   resetPlacement();

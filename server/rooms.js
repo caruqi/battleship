@@ -81,12 +81,15 @@ function fire(room, role, idx) {
   const shipId = opponent.board[idx];
   let result = 'miss';
   let sunkShip = null;
+  let hitLetter;
 
   if (shipId > 0) {
     result = 'hit';
     opponent.incoming[idx] = 'hit';
     const ship = opponent.ships.find((s) => s.id === shipId);
     ship.hits = (ship.hits || 0) + 1;
+    const cellIdx = ship.cells.indexOf(idx);
+    hitLetter = ship.letters && ship.letters[cellIdx];
     if (ship.hits >= ship.size) {
       ship.sunk = true;
       sunkShip = ship;
@@ -111,7 +114,9 @@ function fire(room, role, idx) {
   return {
     success: true,
     result: sunkShip ? 'sunk' : result,
+    letter: hitLetter,
     shipCells: sunkShip ? sunkShip.cells : undefined,
+    shipLetters: sunkShip ? sunkShip.letters : undefined,
     shipName: sunkShip ? sunkShip.name : undefined,
     nextTurn: room.turn,
     gameOver,

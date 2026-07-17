@@ -69,7 +69,11 @@ function validateFleet(shipsInput) {
     }
     const shipId = i + 1;
     for (const idx of cells) board[idx] = shipId;
-    ships.push({ id: shipId, size, name: shipName(size), cells: [...cells], hits: 0, sunk: false });
+    const lettersRaw = shipsInput[i] && shipsInput[i].letters;
+    const letters = Array.isArray(lettersRaw) && lettersRaw.length === cells.length
+      ? lettersRaw.map((l) => (typeof l === 'string' ? l.slice(0, 2) : ''))
+      : cells.map(() => '');
+    ships.push({ id: shipId, size, name: shipName(size), cells: [...cells], letters, hits: 0, sunk: false });
   }
 
   for (const size of Object.keys(EXPECTED_COUNTS)) {
