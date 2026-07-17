@@ -6,6 +6,21 @@ const SHIP_DEFS = [
 ];
 const FULL_SHIP_LIST = SHIP_DEFS.flatMap((d) => Array.from({ length: d.count }, () => ({ size: d.size, name: d.name })));
 
+const FUNNY_WORDS = {
+  1: ['Ы', 'Э', 'А', 'О', 'У'],
+  2: ['НУ', 'ОЙ', 'ЭХ', 'ФУ', 'ГЫ', 'ХА', 'АХ', 'ОХ', 'УХ', 'ХИ'],
+  3: ['БУХ', 'ПЫХ', 'ГАВ', 'МЯУ', 'ХРЮ', 'БУМ', 'ПУФ', 'ФЫР'],
+  4: ['ШМЯК', 'ПШИК', 'КВАК', 'ХРЮК', 'ГЫГЫ', 'ГРОМ'],
+};
+
+function pickWord(size, used) {
+  const pool = FUNNY_WORDS[size].filter((w) => !used.has(w));
+  const list = pool.length ? pool : FUNNY_WORDS[size];
+  const word = list[Math.floor(Math.random() * list.length)];
+  used.add(word);
+  return word;
+}
+
 const app = document.getElementById('app');
 
 let S = {
@@ -28,6 +43,7 @@ let S = {
   log: [],
   oppIncoming: new Array(100).fill(null), // my shots against enemy board
   busy: false,
+  pendingFire: null,
 };
 
 function resetPlacement() {
@@ -37,6 +53,7 @@ function resetPlacement() {
   S.armedIdx = 0;
   S.orientation = 'H';
   S.readySent = false;
+  S.usedWords = new Set();
 }
 resetPlacement();
 
@@ -102,20 +119,34 @@ function handleServerMessage(type, payload) {
   if (type === 'fire_result') {
     const { by, idx, result, shipCells, shipName, coord, nextTurn } = payload;
     if (by === S.role) {
-      S.oppIncoming[idx] = result === 'sunk' ? 'sunk' : result;
-      if (shipCells) shipCells.forEach((c) => { S.oppIncoming[c] = 'sunk'; });
-    } else {
-      S.incoming[idx] = result === 'miss' ? 'miss' : 'hit';
-      if (shipCells) {
-        shipCells.forEach((c) => { S.incoming[c] = 'hit'; });
-        const ship = S.ships.find((s) => s.cells.includes(idx));
-        if (ship) ship.sunk = true;
-      }
+      const pending = S.pendingFire && S.pendingFire.idx === idx ? S.pendingFire : null;
+      const finish = () => {
+        S.oppIncoming[idx] = result === 'sunk' ? 'sunk' : result;
+        if (shipCells) shipCells.forEach((c) => { S.oppIncoming[c] = 'sunk'; });
+        S.turn = nextTurn;
+        S.log.push({ by, coord, result, shipName });
+        S.busy = false;
+        S.pendingFire = null;
+        render();
+        const landedCell = app.querySelector(`.cell[data-mode="enemy"][data-idx="${idx}"]`);
+        playImpact(landedCell, result);
+      };
+      if (pending) pending.missileDone.then(finish);
+      else finish();
+      return;
+    }
+    S.incoming[idx] = result === 'miss' ? 'miss' : 'hit';
+    if (shipCells) {
+      shipCells.forEach((c) => { S.incoming[c] = 'hit'; });
+      const ship = S.ships.find((s) => s.cells.includes(idx));
+      if (ship) ship.sunk = true;
     }
     S.turn = nextTurn;
     S.log.push({ by, coord, result, shipName });
-    S.busy = false;
-    return render();
+    render();
+    const ownCell = app.querySelector(`.cell[data-mode="own"][data-idx="${idx}"]`);
+    playImpact(ownCell, result);
+    return;
   }
   if (type === 'game_over') {
     S.winner = payload.winner;
@@ -223,6 +254,7 @@ function gridHtml(mode, clickable) {
     for (let c = 0; c < 10; c++) {
       const idx = r * 10 + c;
       let cls = 'cell';
+      let letter = '';
       if (mode === 'place') {
         if (S.board[idx] > 0) cls += ' ship';
         if (S.hoverPreview.includes(idx)) cls += S.hoverPreview.valid ? ' preview-ok' : ' preview-bad';
@@ -239,7 +271,15 @@ function gridHtml(mode, clickable) {
         if (S.oppIncoming[idx] === 'miss') cls += ' miss';
         if (clickable && S.oppIncoming[idx] == null) cls += ' clickable';
       }
-      html += `<div class="${cls}" data-idx="${idx}" data-mode="${mode}"></div>`;
+      if ((mode === 'place' || mode === 'own') && S.board[idx] > 0) {
+        const ship = S.ships.find((s) => s.cells.includes(idx));
+        if (ship && ship.letters) {
+          const li = ship.cells.indexOf(idx);
+          letter = ship.letters[li] || '';
+        }
+      }
+      const inner = letter ? `<span class="ship-letter">${letter}</span>` : '';
+      html += `<div class="${cls}" data-idx="${idx}" data-mode="${mode}">${inner}</div>`;
     }
   }
   html += `</div>`;
@@ -292,6 +332,34 @@ function renderFinished() {
 }
 
 render();
+
+// ---------- shot effects ----------
+function playMissile(cellEl) {
+  return new Promise((resolve) => {
+    if (!cellEl) { resolve(); return; }
+    const fx = document.createElement('div');
+    fx.className = 'fx fx-missile';
+    fx.innerHTML = '<div class="dot"></div>';
+    cellEl.appendChild(fx);
+    setTimeout(() => { fx.remove(); resolve(); }, 420);
+  });
+}
+function playImpact(cellEl, result) {
+  if (!cellEl) return;
+  const fx = document.createElement('div');
+  if (result === 'miss') {
+    fx.className = 'fx fx-splash';
+    fx.innerHTML = '<div class="ring"></div><div class="ring r2"></div>';
+    cellEl.appendChild(fx);
+    setTimeout(() => fx.remove(), 700);
+  } else {
+    const isSunk = result === 'sunk';
+    fx.className = 'fx fx-explosion' + (isSunk ? ' sunk' : '');
+    fx.innerHTML = `<div class="burst" style="--burst-scale:${isSunk ? 1.9 : 1.3}"></div>`;
+    cellEl.appendChild(fx);
+    setTimeout(() => fx.remove(), isSunk ? 750 : 600);
+  }
+}
 
 // ---------- events ----------
 app.addEventListener('click', (e) => {
@@ -379,7 +447,8 @@ function placeAt(idx) {
   if (!canPlace(cells)) { S.err = 'Нельзя разместить здесь корабль'; render(); return; }
   const shipId = S.ships.length + 1;
   cells.forEach((c) => S.board[c] = shipId);
-  S.ships.push({ id: shipId, size: cur.size, name: cur.name, cells, hits: 0, sunk: false });
+  const word = pickWord(cur.size, S.usedWords);
+  S.ships.push({ id: shipId, size: cur.size, name: cur.name, cells, hits: 0, sunk: false, word, letters: word.split('') });
   S.placementQueue.splice(S.armedIdx, 1);
   S.armedIdx = 0;
   S.err = '';
@@ -389,6 +458,7 @@ function doRandom() {
   for (let attempt = 0; attempt < 400; attempt++) {
     const board = new Array(100).fill(0);
     const ships = [];
+    const usedWords = new Set();
     let ok = true;
     for (const def of FULL_SHIP_LIST) {
       let placed = false;
@@ -417,13 +487,14 @@ function doRandom() {
         if (!validLocal) continue;
         const shipId = ships.length + 1;
         cells.forEach((cc) => board[cc] = shipId);
-        ships.push({ id: shipId, size: def.size, name: def.name, cells, hits: 0, sunk: false });
+        const word = pickWord(def.size, usedWords);
+        ships.push({ id: shipId, size: def.size, name: def.name, cells, hits: 0, sunk: false, word, letters: word.split('') });
         placed = true;
         break;
       }
       if (!placed) { ok = false; break; }
     }
-    if (ok) { S.board = board; S.ships = ships; S.placementQueue = []; S.armedIdx = 0; render(); return; }
+    if (ok) { S.board = board; S.ships = ships; S.usedWords = usedWords; S.placementQueue = []; S.armedIdx = 0; render(); return; }
   }
   S.err = 'Не удалось расставить, попробуйте ещё раз';
   render();
@@ -454,6 +525,9 @@ function fireAt(idx) {
   if (!(S.turn === S.role && S.status === 'battle')) return;
   if (S.oppIncoming[idx] != null) return;
   S.busy = true;
+  const cellEl = app.querySelector(`.cell[data-mode="enemy"][data-idx="${idx}"]`);
+  const missileDone = playMissile(cellEl);
+  S.pendingFire = { idx, missileDone };
   wsSend('fire', { code: S.code, idx });
 }
 function doRematch() {
@@ -463,7 +537,7 @@ function doRematch() {
     phase: 'lobby', role: null, code: null, err: '',
     incoming: new Array(100).fill(null),
     oppIncoming: new Array(100).fill(null),
-    turn: null, status: null, winner: null, log: [], busy: false,
+    turn: null, status: null, winner: null, log: [], busy: false, pendingFire: null,
   };
   resetPlacement();
   render();
