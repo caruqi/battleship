@@ -354,11 +354,43 @@ render();
 function playMissile(cellEl) {
   return new Promise((resolve) => {
     if (!cellEl) { resolve(); return; }
+    const DURATION = 1700; // ms, stays under the ~2s budget once trail fade is included
+
+    // launch from a random side/corner of the map, not always straight down
+    const angle = Math.random() * 360;
+    const rad = (angle * Math.PI) / 180;
+    const dist = 380; // % of cell size — reads as "from off the edge of the board"
+    const sx = Math.cos(rad) * dist;
+    const sy = Math.sin(rad) * dist;
+
     const fx = document.createElement('div');
     fx.className = 'fx fx-missile';
-    fx.innerHTML = '<div class="dot"></div>';
+    fx.style.setProperty('--fly-duration', DURATION + 'ms');
+    const dot = document.createElement('div');
+    dot.className = 'dot';
+    dot.style.setProperty('--sx', sx + '%');
+    dot.style.setProperty('--sy', sy + '%');
+    fx.appendChild(dot);
     cellEl.appendChild(fx);
-    setTimeout(() => { fx.remove(); resolve(); }, 420);
+
+    // fire/smoke puffs trailing the missile along its flight path, each fading within ~450ms
+    const puffTimes = [100, 350, 600, 850, 1100, 1400];
+    puffTimes.forEach((t) => {
+      setTimeout(() => {
+        if (!fx.isConnected) return;
+        const progress = t / DURATION;
+        const px = sx * (1 - progress);
+        const py = sy * (1 - progress);
+        const puff = document.createElement('div');
+        puff.className = 'fx-puff';
+        puff.style.left = `calc(50% + ${px}%)`;
+        puff.style.top = `calc(50% + ${py}%)`;
+        fx.appendChild(puff);
+        setTimeout(() => puff.remove(), 450);
+      }, t);
+    });
+
+    setTimeout(() => { fx.remove(); resolve(); }, DURATION);
   });
 }
 function playImpact(cellEl, result) {
