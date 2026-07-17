@@ -81,6 +81,8 @@ function connectWS() {
   ws.onclose = () => {
     S.connState = 'closed';
     if (S.phase !== 'lobby') S.err = 'Соединение с сервером потеряно';
+    S.busy = false;
+    S.pendingFire = null;
     render();
   };
   ws.onerror = () => {};
@@ -351,46 +353,72 @@ function renderFinished() {
 render();
 
 // ---------- shot effects ----------
+const ROCKET_SVG = `<svg viewBox="0 0 100 40" xmlns="http://www.w3.org/2000/svg">
+  <path d="M0 20 L20 11 L20 29 Z" fill="#ff7a3c" opacity="0.9"/>
+  <path d="M0 20 L11 16 L11 24 Z" fill="#ffd27a"/>
+  <rect x="18" y="11" width="55" height="18" rx="9" fill="#dbe8ef"/>
+  <path d="M73 11 L94 20 L73 29 Z" fill="#e0a63e"/>
+  <path d="M24 11 L15 2 L30 11 Z" fill="#7a5c22"/>
+  <path d="M24 29 L15 38 L30 29 Z" fill="#7a5c22"/>
+  <circle cx="47" cy="20" r="6" fill="#2fd47e"/>
+</svg>`;
+
+function randomPointOnRectEdge(rect) {
+  const side = Math.floor(Math.random() * 4); // 0=top,1=right,2=bottom,3=left
+  if (side === 0) return [rect.left + Math.random() * rect.width, rect.top];
+  if (side === 1) return [rect.right, rect.top + Math.random() * rect.height];
+  if (side === 2) return [rect.left + Math.random() * rect.width, rect.bottom];
+  return [rect.left, rect.top + Math.random() * rect.height];
+}
+
 function playMissile(cellEl) {
   return new Promise((resolve) => {
     if (!cellEl) { resolve(); return; }
-    const DURATION = 1700; // ms, stays under the ~2s budget once trail fade is included
+    const DURATION = 850; // ms, comfortably under the 1s cap
 
-    // launch from a random side/corner of the map, not always straight down
-    const angle = Math.random() * 360;
-    const rad = (angle * Math.PI) / 180;
-    const dist = 380; // % of cell size — reads as "from off the edge of the board"
-    const sx = Math.cos(rad) * dist;
-    const sy = Math.sin(rad) * dist;
+    const targetRect = cellEl.getBoundingClientRect();
+    const tx = targetRect.left + targetRect.width / 2;
+    const ty = targetRect.top + targetRect.height / 2;
 
-    const fx = document.createElement('div');
-    fx.className = 'fx fx-missile';
-    fx.style.setProperty('--fly-duration', DURATION + 'ms');
-    const dot = document.createElement('div');
-    dot.className = 'dot';
-    dot.style.setProperty('--sx', sx + '%');
-    dot.style.setProperty('--sy', sy + '%');
-    fx.appendChild(dot);
-    cellEl.appendChild(fx);
+    // launch from a random point on the board's edge, or the screen's edge
+    const grid = cellEl.closest('.grid');
+    const viewportRect = { left: 0, top: 0, right: window.innerWidth, bottom: window.innerHeight, width: window.innerWidth, height: window.innerHeight };
+    const sourceRect = (Math.random() < 0.5 && grid) ? grid.getBoundingClientRect() : viewportRect;
+    const [lx, ly] = randomPointOnRectEdge(sourceRect);
 
-    // fire/smoke puffs trailing the missile along its flight path, each fading within ~450ms
-    const puffTimes = [100, 350, 600, 850, 1100, 1400];
+    const dx = lx - tx;
+    const dy = ly - ty;
+    const angleDeg = Math.atan2(ty - ly, tx - lx) * (180 / Math.PI);
+
+    const layer = document.createElement('div');
+    layer.className = 'missile-layer';
+    layer.style.left = tx + 'px';
+    layer.style.top = ty + 'px';
+    layer.style.setProperty('--dx', dx + 'px');
+    layer.style.setProperty('--dy', dy + 'px');
+    layer.style.setProperty('--angle', angleDeg + 'deg');
+    layer.style.setProperty('--fly-duration', DURATION + 'ms');
+    layer.innerHTML = ROCKET_SVG;
+    document.body.appendChild(layer);
+
+    // fire/smoke puffs trailing the rocket along its flight path
+    const puffTimes = [50, 180, 310, 440, 560];
     puffTimes.forEach((t) => {
       setTimeout(() => {
-        if (!fx.isConnected) return;
+        if (!layer.isConnected) return;
         const progress = t / DURATION;
-        const px = sx * (1 - progress);
-        const py = sy * (1 - progress);
+        const px = lx + (tx - lx) * progress;
+        const py = ly + (ty - ly) * progress;
         const puff = document.createElement('div');
-        puff.className = 'fx-puff';
-        puff.style.left = `calc(50% + ${px}%)`;
-        puff.style.top = `calc(50% + ${py}%)`;
-        fx.appendChild(puff);
-        setTimeout(() => puff.remove(), 450);
+        puff.className = 'missile-puff';
+        puff.style.left = px + 'px';
+        puff.style.top = py + 'px';
+        document.body.appendChild(puff);
+        setTimeout(() => puff.remove(), 350);
       }, t);
     });
 
-    setTimeout(() => { fx.remove(); resolve(); }, DURATION);
+    setTimeout(() => { layer.remove(); resolve(); }, DURATION);
   });
 }
 function playImpact(cellEl, result) {
@@ -576,8 +604,20 @@ function fireAt(idx) {
   S.busy = true;
   const cellEl = app.querySelector(`.cell[data-mode="enemy"][data-idx="${idx}"]`);
   const missileDone = playMissile(cellEl);
-  S.pendingFire = { idx, missileDone };
+  const token = {};
+  S.pendingFire = { idx, missileDone, token };
   wsSend('fire', { code: S.code, idx });
+
+  // safety valve: if the server never answers this shot (dropped connection,
+  // lost message), recover instead of leaving the board stuck forever
+  setTimeout(() => {
+    if (S.pendingFire && S.pendingFire.token === token) {
+      S.pendingFire = null;
+      S.busy = false;
+      S.err = 'Нет ответа от сервера — попробуйте выстрелить ещё раз';
+      render();
+    }
+  }, 12000);
 }
 function doRematch() {
   wsSend('leave_room', { code: S.code });

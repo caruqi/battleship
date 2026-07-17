@@ -123,6 +123,8 @@ function handleLeave(ws) {
 wss.on('connection', (ws) => {
   ws.roomCode = null;
   ws.role = null;
+  ws.isAlive = true;
+  ws.on('pong', () => { ws.isAlive = true; });
 
   ws.on('message', (raw) => {
     let msg;
@@ -150,6 +152,23 @@ wss.on('connection', (ws) => {
 
   ws.on('close', () => handleLeave(ws));
 });
+
+// Keep intermediary proxies from silently dropping idle WS connections during
+// long human turns, and detect/clean up connections that die without a clean
+// close handshake (e.g. a backgrounded mobile tab) instead of leaving both
+// players' games stuck waiting for a message that will never arrive.
+const HEARTBEAT_MS = 25000;
+const heartbeatTimer = setInterval(() => {
+  wss.clients.forEach((ws) => {
+    if (ws.isAlive === false) {
+      handleLeave(ws);
+      return ws.terminate();
+    }
+    ws.isAlive = false;
+    ws.ping();
+  });
+}, HEARTBEAT_MS);
+wss.on('close', () => clearInterval(heartbeatTimer));
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
