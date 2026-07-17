@@ -129,27 +129,36 @@ function handleServerMessage(type, payload) {
   if (type === 'fire_result') {
     const { by, idx, result, letter, shipCells, shipLetters, shipName, coord, nextTurn } = payload;
     if (by === S.role) {
+      // Game state (whose turn it is, hit/miss history) applies immediately
+      // and unconditionally — it must never wait on the missile animation.
+      // Only the busy-lock and the visual impact are deferred, and even
+      // those always resolve via .catch(), so a broken animation can never
+      // leave the turn indicator stuck.
+      S.oppIncoming[idx] = result === 'sunk' ? 'sunk' : result;
+      if (letter) S.oppLetters[idx] = letter;
+      if (shipCells) {
+        shipCells.forEach((c, i) => {
+          S.oppIncoming[c] = 'sunk';
+          const l = shipLetters && shipLetters[i];
+          if (l) S.oppLetters[c] = l;
+        });
+      }
+      S.turn = nextTurn;
+      S.log.push({ by, coord, result, shipName });
       const pending = S.pendingFire && S.pendingFire.idx === idx ? S.pendingFire : null;
-      const finish = () => {
-        S.oppIncoming[idx] = result === 'sunk' ? 'sunk' : result;
-        if (letter) S.oppLetters[idx] = letter;
-        if (shipCells) {
-          shipCells.forEach((c, i) => {
-            S.oppIncoming[c] = 'sunk';
-            const l = shipLetters && shipLetters[i];
-            if (l) S.oppLetters[c] = l;
-          });
-        }
-        S.turn = nextTurn;
-        S.log.push({ by, coord, result, shipName });
+      S.pendingFire = null;
+      render();
+
+      const finishVisuals = () => {
         S.busy = false;
-        S.pendingFire = null;
-        render();
         const landedCell = app.querySelector(`.cell[data-mode="enemy"][data-idx="${idx}"]`);
         playImpact(landedCell, result);
+        if (result === 'sunk' && shipCells) {
+          playShipDestroyed(shipCells.map((c) => app.querySelector(`.cell[data-mode="enemy"][data-idx="${c}"]`)));
+        }
       };
-      if (pending) pending.missileDone.then(finish);
-      else finish();
+      if (pending) pending.missileDone.then(finishVisuals).catch(finishVisuals);
+      else finishVisuals();
       return;
     }
     S.incoming[idx] = result === 'miss' ? 'miss' : 'hit';
@@ -163,6 +172,9 @@ function handleServerMessage(type, payload) {
     render();
     const ownCell = app.querySelector(`.cell[data-mode="own"][data-idx="${idx}"]`);
     playImpact(ownCell, result);
+    if (result === 'sunk' && shipCells) {
+      playShipDestroyed(shipCells.map((c) => app.querySelector(`.cell[data-mode="own"][data-idx="${c}"]`)));
+    }
     return;
   }
   if (type === 'game_over') {
@@ -436,6 +448,43 @@ function playImpact(cellEl, result) {
     cellEl.appendChild(fx);
     setTimeout(() => fx.remove(), isSunk ? 750 : 600);
   }
+}
+
+const SAILOR_SVG = `<svg viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
+  <circle cx="10" cy="5" r="3" fill="#dbe8ef"/>
+  <line x1="10" y1="8" x2="10" y2="15" stroke="#dbe8ef" stroke-width="2.2" stroke-linecap="round"/>
+  <line x1="10" y1="10" x2="4" y2="7" stroke="#dbe8ef" stroke-width="2.2" stroke-linecap="round"/>
+  <line x1="10" y1="10" x2="16" y2="7" stroke="#dbe8ef" stroke-width="2.2" stroke-linecap="round"/>
+  <line x1="10" y1="15" x2="5" y2="19" stroke="#dbe8ef" stroke-width="2.2" stroke-linecap="round"/>
+  <line x1="10" y1="15" x2="15" y2="19" stroke="#dbe8ef" stroke-width="2.2" stroke-linecap="round"/>
+</svg>`;
+
+function playShipDestroyed(cellEls) {
+  cellEls.forEach((cellEl) => {
+    if (!cellEl) return;
+    const rect = cellEl.getBoundingClientRect();
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+    const count = 2 + Math.floor(Math.random() * 2);
+    for (let i = 0; i < count; i++) {
+      const angle = Math.random() * 360;
+      const rad = (angle * Math.PI) / 180;
+      const dist = 36 + Math.random() * 46;
+      const dx = Math.cos(rad) * dist;
+      const dy = Math.sin(rad) * dist - 18; // slight upward toss
+      const rot = (Math.random() - 0.5) * 720;
+      const sailor = document.createElement('div');
+      sailor.className = 'sailor';
+      sailor.style.left = cx + 'px';
+      sailor.style.top = cy + 'px';
+      sailor.style.setProperty('--dx', dx + 'px');
+      sailor.style.setProperty('--dy', dy + 'px');
+      sailor.style.setProperty('--rot', rot + 'deg');
+      sailor.innerHTML = SAILOR_SVG;
+      document.body.appendChild(sailor);
+      setTimeout(() => sailor.remove(), 800);
+    }
+  });
 }
 
 // ---------- events ----------
