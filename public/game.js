@@ -276,6 +276,8 @@ function renderBattle() {
       ${logHtml}
     </div>
   `;
+  const logEl = app.querySelector('.log');
+  if (logEl) logEl.scrollTop = logEl.scrollHeight;
 }
 
 function renderFinished() {
